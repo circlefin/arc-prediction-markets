@@ -3,6 +3,7 @@ pragma solidity ^0.8.0;
 
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/utils/math/Math.sol";
 
 import "@uma/core/contracts/common/implementation/ExpandedERC20.sol";
 
@@ -130,22 +131,16 @@ contract PredictionMarketAMM is ReentrancyGuard {
         // Pull Yes tokens from user
         longToken.safeTransferFrom(msg.sender, address(this), yesAmount);
 
-        // Swap Yes into pool, get No out
-        uint256 effectiveAmount = (yesAmount * (10000 - feeBps)) / 10000;
-        uint256 newReserveYes = reserveYes + effectiveAmount;
-        uint256 noOut = reserveNo - (reserveYes * reserveNo) / newReserveYes;
+        // Calculate USDC output using quadratic solver
+        usdcOut = _calcSell(reserveYes, reserveNo, yesAmount);
+        require(usdcOut > 0, "Zero output");
 
-        reserveYes += yesAmount;
-        reserveNo -= noOut;
+        // Update reserves
+        reserveYes = reserveYes + yesAmount - usdcOut;
+        reserveNo = reserveNo - usdcOut;
 
-        // Redeem min(yesAmount, noOut) pairs for USDC
-        // noOut < yesAmount always (due to price impact + fee), so redeem noOut pairs
-        market.redeem(noOut);
-        usdcOut = noOut;
-
-        // The leftover yes tokens (yesAmount - noOut) are already added to reserveYes above
-        // Adjust: we redeemed noOut Yes tokens from reserves too
-        reserveYes -= noOut;
+        // Redeem usdcOut pairs for USDC
+        market.redeem(usdcOut);
 
         // Transfer USDC to user
         collateralToken.safeTransfer(msg.sender, usdcOut);
@@ -158,17 +153,15 @@ contract PredictionMarketAMM is ReentrancyGuard {
 
         shortToken.safeTransferFrom(msg.sender, address(this), noAmount);
 
-        uint256 effectiveAmount = (noAmount * (10000 - feeBps)) / 10000;
-        uint256 newReserveNo = reserveNo + effectiveAmount;
-        uint256 yesOut = reserveYes - (reserveYes * reserveNo) / newReserveNo;
+        // Calculate USDC output using quadratic solver
+        usdcOut = _calcSell(reserveNo, reserveYes, noAmount);
+        require(usdcOut > 0, "Zero output");
 
-        reserveNo += noAmount;
-        reserveYes -= yesOut;
+        // Update reserves
+        reserveNo = reserveNo + noAmount - usdcOut;
+        reserveYes = reserveYes - usdcOut;
 
-        market.redeem(yesOut);
-        usdcOut = yesOut;
-
-        reserveNo -= yesOut;
+        market.redeem(usdcOut);
 
         collateralToken.safeTransfer(msg.sender, usdcOut);
 
@@ -213,19 +206,38 @@ contract PredictionMarketAMM is ReentrancyGuard {
 
     /// @notice Preview how much USDC you get for selling Yes tokens
     function calcSellYes(uint256 yesAmount) external view returns (uint256) {
-        if (yesAmount == 0 || reserveYes == 0 || reserveNo == 0) return 0;
-        uint256 effectiveAmount = (yesAmount * (10000 - feeBps)) / 10000;
-        uint256 newReserveYes = reserveYes + effectiveAmount;
-        uint256 noOut = reserveNo - (reserveYes * reserveNo) / newReserveYes;
-        return noOut;
+        return _calcSell(reserveYes, reserveNo, yesAmount);
     }
 
     /// @notice Preview how much USDC you get for selling No tokens
     function calcSellNo(uint256 noAmount) external view returns (uint256) {
-        if (noAmount == 0 || reserveYes == 0 || reserveNo == 0) return 0;
-        uint256 effectiveAmount = (noAmount * (10000 - feeBps)) / 10000;
-        uint256 newReserveNo = reserveNo + effectiveAmount;
-        uint256 yesOut = reserveYes - (reserveYes * reserveNo) / newReserveNo;
-        return yesOut;
+        return _calcSell(reserveNo, reserveYes, noAmount);
+    }
+
+    /**
+     * @notice Internal helper to calculate the USDC output when selling outcome tokens.
+     * Solves the quadratic equation: x^2 - b*x + c = 0
+     * where:
+     *   b = reserveIn + reserveOut + tokenAmountEff
+     *   c = tokenAmountEff * reserveOut
+     * The smaller root is: x = (b - sqrt(b^2 - 4*c)) / 2
+     */
+    function _calcSell(
+        uint256 reserveIn,
+        uint256 reserveOut,
+        uint256 tokenAmount
+    ) internal view returns (uint256 usdcOut) {
+        if (tokenAmount == 0 || reserveIn == 0 || reserveOut == 0) return 0;
+
+        uint256 tokenAmountEff = (tokenAmount * (10000 - feeBps)) / 10000;
+
+        uint256 b = reserveIn + reserveOut + tokenAmountEff;
+        uint256 c = tokenAmountEff * reserveOut;
+
+        // b^2 - 4*c is mathematically guaranteed to be >= 0
+        uint256 discriminant = b * b - 4 * c;
+        uint256 rootDisc = Math.sqrt(discriminant);
+
+        usdcOut = (b - rootDisc) / 2;
     }
 }
