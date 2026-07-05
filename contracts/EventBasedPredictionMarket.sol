@@ -22,6 +22,9 @@ import "@uma/core/contracts/data-verification-mechanism/interfaces/IdentifierWhi
  *   4. Anyone can propose a resolution price via the OO. After the liveness period, the market settles.
  *   5. If disputed, the OO escalates to UMA's DVM for arbitration and re-requests the price.
  *   6. Once settled, users call settle() to redeem tokens for collateral based on the outcome.
+ *   7. If nobody proposes/resolves a price within SETTLEMENT_TIMEOUT of initialization, any token
+ *      holder can call emergencyRefund() to redeem at a neutral 0.5/0.5 split instead of waiting
+ *      indefinitely on the Optimistic Oracle.
  *
  * Resolution values:
  *   - 1e18 (YES): Long tokens worth 1 collateral each, Short tokens worth 0.
@@ -49,6 +52,10 @@ contract EventBasedPredictionMarket is Testable {
     // Price returned from the Optimistic Oracle at settlement time.
     int256 public expiryPrice;
 
+    // Timestamp after which emergencyRefund() becomes callable if the OO still hasn't settled a price.
+    uint256 public settlementDeadline;
+    uint256 public constant SETTLEMENT_TIMEOUT = 72 hours;
+
     // External contract interfaces.
     ExpandedERC20 public collateralToken;
     ExpandedIERC20 public longToken;
@@ -70,6 +77,7 @@ contract EventBasedPredictionMarket is Testable {
     event PositionSettled(address indexed sponsor, uint256 collateralReturned, uint256 longTokens, uint256 shortTokens);
     event MarketInitialized(uint256 requestTimestamp);
     event PriceDisputed(uint256 oldTimestamp, uint256 newTimestamp);
+    event EmergencyRefund(address indexed sponsor, uint256 collateralReturned, uint256 longTokens, uint256 shortTokens);
 
     /****************************************
      *               MODIFIERS              *
@@ -136,6 +144,7 @@ contract EventBasedPredictionMarket is Testable {
         }
 
         _requestOraclePrice();
+        settlementDeadline = getCurrentTime() + SETTLEMENT_TIMEOUT;
 
         emit MarketInitialized(requestTimestamp);
     }
@@ -199,6 +208,9 @@ contract EventBasedPredictionMarket is Testable {
         requestTimestamp = getCurrentTime();
         _requestOraclePrice();
 
+        // NOTE: settlementDeadline intentionally does NOT reset here. A dispute that occurs close to
+        // the deadline can race emergencyRefund() against a legitimate re-resolution — see PR discussion.
+
         emit PriceDisputed(oldTimestamp, requestTimestamp);
     }
 
@@ -250,6 +262,34 @@ contract EventBasedPredictionMarket is Testable {
         collateralToken.safeTransfer(msg.sender, collateralReturned);
 
         emit PositionSettled(msg.sender, collateralReturned, longTokensToRedeem, shortTokensToRedeem);
+    }
+
+    /**
+     * @notice Emergency exit for token holders when the Optimistic Oracle never resolves a price.
+     * Callable only after SETTLEMENT_TIMEOUT has elapsed since initializeMarket() with no settlement
+     * price received. Pays out at a neutral 0.5/0.5 split (same math as an "Undetermined" OO result),
+     * since the true outcome was never established. Directional (one-sided) holders are otherwise
+     * unable to exit — redeem() only works for matched Long+Short pairs.
+     * @param longTokensToRedeem Number of Long tokens to redeem.
+     * @param shortTokensToRedeem Number of Short tokens to redeem.
+     * @return collateralReturned Total collateral returned.
+     */
+    function emergencyRefund(
+        uint256 longTokensToRedeem,
+        uint256 shortTokensToRedeem
+    ) public requestInitialized returns (uint256 collateralReturned) {
+        require(getCurrentTime() > settlementDeadline, "Settlement deadline not reached");
+        require(!receivedSettlementPrice, "Price already resolved, use settle()");
+
+        require(longToken.burnFrom(msg.sender, longTokensToRedeem));
+        require(shortToken.burnFrom(msg.sender, shortTokensToRedeem));
+
+        // Undetermined-equivalent split: every token (long or short) is worth exactly 0.5 collateral,
+        // since no outcome was ever established.
+        collateralReturned = ((longTokensToRedeem + shortTokensToRedeem) * 5e17) / 1e18;
+        collateralToken.safeTransfer(msg.sender, collateralReturned);
+
+        emit EmergencyRefund(msg.sender, collateralReturned, longTokensToRedeem, shortTokensToRedeem);
     }
 
     /****************************************
