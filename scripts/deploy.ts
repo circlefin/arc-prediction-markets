@@ -67,6 +67,10 @@ const CONFIG = {
   deployerMint: ethers.parseEther("100000"),  // 100,000 ARCT for deployer
 };
 
+/** Arc Testnet chain ID. MockOracleAncillary is intentionally permissionless and
+ *  must only be registered as Finder "Oracle" on this network. */
+const ARC_TESTNET_CHAIN_ID = 5042002n;
+
 // --- Helpers --------------------------------------------------------
 
 async function deployFromArtifact(
@@ -156,6 +160,17 @@ async function main() {
   const balance = await ethers.provider.getBalance(baseSigner.address);
 
   console.log("=== UMA Prediction Market Deployment ===\n");
+
+  const network = await ethers.provider.getNetwork();
+  console.log("Network:", network.name || "(unnamed)", `chainId=${network.chainId}`);
+  if (network.chainId !== ARC_TESTNET_CHAIN_ID) {
+    throw new Error(
+      `Refusing to deploy MockOracleAncillary outside Arc Testnet. ` +
+        `This script registers a permissionless mock DVM as Finder "Oracle", which is only safe on Arc Testnet ` +
+        `(chainId ${ARC_TESTNET_CHAIN_ID}). Current chainId=${network.chainId}.`
+    );
+  }
+
   console.log("Deployer:", baseSigner.address);
   console.log("Balance:", ethers.formatUnits(balance, 18), "(native gas)\n");
 
