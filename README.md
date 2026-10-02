@@ -6,6 +6,8 @@ Resolution is handled by UMA's Optimistic Oracle V2: anyone can propose an outco
 
 Since UMA's oracle infrastructure is not natively deployed on Arc Testnet, the deploy script bootstraps the entire UMA ecosystem on-chain - Finder, IdentifierWhitelist, AddressWhitelist, Store, MockOracleAncillary, and OptimisticOracleV2.
 
+> **Testnet-only oracle wiring:** `MockOracleAncillary` is a permissionless UMA test double (`pushPrice` has no access control). The deploy script refuses to run on any chain other than Arc Testnet (`5042002`) so this mock cannot be copied into a valued network as the Finder `Oracle` implementation. A production deployment needs a real dispute-resolution backend (UMA's DVM is not deployed on Arc today).
+
 <img alt="Arc Nanopayments Demo dashboard" src="public/screenshot.png" />
 
 ## Table of Contents
