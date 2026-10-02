@@ -18,8 +18,19 @@
 
 import type { NextConfig } from "next";
 
+// Baseline hardening. DENY framing stops clickjacking of the trade buttons.
+// No CSP here on purpose: wallet SDKs load remote scripts and iframes, and a wrong policy
+// breaks sign-in; add one once the deployment's origins are known.
+export const securityHeaders = [
+  { key: "X-Content-Type-Options", value: "nosniff" },
+  { key: "X-Frame-Options", value: "DENY" },
+  { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
+];
+
 const nextConfig: NextConfig = {
-  /* config options here */
+  async headers() {
+    return [{ source: "/:path*", headers: securityHeaders }];
+  },
 };
 
 export default nextConfig;

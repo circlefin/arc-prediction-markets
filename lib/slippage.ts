@@ -16,24 +16,17 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { defineConfig, globalIgnores } from "eslint/config";
-import nextVitals from "eslint-config-next/core-web-vitals";
-import nextTs from "eslint-config-next/typescript";
+/** Default tolerance between the quote a user saw and what the trade may deliver: 1%. */
+export const DEFAULT_SLIPPAGE_BPS = BigInt(100);
 
-const eslintConfig = defineConfig([
-  ...nextVitals,
-  ...nextTs,
-  // Override default ignores of eslint-config-next.
-  globalIgnores([
-    // Default ignores of eslint-config-next:
-    ".next/**",
-    "out/**",
-    "build/**",
-    "next-env.d.ts",
-    // Hardhat build output:
-    "artifacts/**",
-    "cache/**",
-  ]),
-]);
+const BPS = BigInt(10_000);
 
-export default eslintConfig;
+/**
+ * The smallest amount a trade may return. The AMM takes a minimum-output argument on every
+ * trade; without one the trade executes at whatever price the pool has when it is mined, so
+ * anyone who can order transactions can sandwich it and keep the difference.
+ */
+export function minAfterSlippage(quote: bigint, bps: bigint = DEFAULT_SLIPPAGE_BPS): bigint {
+  if (bps < BigInt(0) || bps > BPS) throw new Error("Slippage must be between 0 and 10000 bps");
+  return (quote * (BPS - bps)) / BPS;
+}

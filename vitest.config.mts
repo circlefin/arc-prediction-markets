@@ -16,24 +16,17 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { defineConfig, globalIgnores } from "eslint/config";
-import nextVitals from "eslint-config-next/core-web-vitals";
-import nextTs from "eslint-config-next/typescript";
+import { fileURLToPath } from "node:url";
+import { defineConfig } from "vitest/config";
 
-const eslintConfig = defineConfig([
-  ...nextVitals,
-  ...nextTs,
-  // Override default ignores of eslint-config-next.
-  globalIgnores([
-    // Default ignores of eslint-config-next:
-    ".next/**",
-    "out/**",
-    "build/**",
-    "next-env.d.ts",
-    // Hardhat build output:
-    "artifacts/**",
-    "cache/**",
-  ]),
-]);
-
-export default eslintConfig;
+// Unit tests: no network, database or wallet credentials required.
+export default defineConfig({
+  resolve: {
+    alias: { "@": fileURLToPath(new URL(".", import.meta.url)) },
+  },
+  test: {
+    environment: "node",
+    include: ["tests/unit/**/*.test.ts"],
+    restoreMocks: true,
+  },
+});

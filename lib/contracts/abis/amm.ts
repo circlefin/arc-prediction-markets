@@ -18,28 +18,40 @@
 
 export const AMM_ABI = [
   {
-    inputs: [{ name: "collateralAmount", type: "uint256" }],
+    inputs: [
+      { name: "collateralAmount", type: "uint256" },
+      { name: "minYesOut", type: "uint256" },
+    ],
     name: "buyYes",
     outputs: [{ name: "yesOut", type: "uint256" }],
     stateMutability: "nonpayable",
     type: "function",
   },
   {
-    inputs: [{ name: "collateralAmount", type: "uint256" }],
+    inputs: [
+      { name: "collateralAmount", type: "uint256" },
+      { name: "minNoOut", type: "uint256" },
+    ],
     name: "buyNo",
     outputs: [{ name: "noOut", type: "uint256" }],
     stateMutability: "nonpayable",
     type: "function",
   },
   {
-    inputs: [{ name: "yesAmount", type: "uint256" }],
+    inputs: [
+      { name: "yesAmount", type: "uint256" },
+      { name: "minUsdcOut", type: "uint256" },
+    ],
     name: "sellYes",
     outputs: [{ name: "collateralOut", type: "uint256" }],
     stateMutability: "nonpayable",
     type: "function",
   },
   {
-    inputs: [{ name: "noAmount", type: "uint256" }],
+    inputs: [
+      { name: "noAmount", type: "uint256" },
+      { name: "minUsdcOut", type: "uint256" },
+    ],
     name: "sellNo",
     outputs: [{ name: "collateralOut", type: "uint256" }],
     stateMutability: "nonpayable",

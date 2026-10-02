@@ -17,19 +17,10 @@
  */
 
 import { NextResponse } from "next/server";
-import * as fs from "fs";
-import * as path from "path";
+import { readMarkets } from "@/lib/server/markets-store";
 
-function getMarketsFilePath() {
-  return path.resolve(process.cwd(), "data", "markets.json");
-}
+export const dynamic = "force-dynamic";
 
 export async function GET() {
-  try {
-    const data = fs.readFileSync(getMarketsFilePath(), "utf-8");
-    const markets = JSON.parse(data);
-    return NextResponse.json(markets);
-  } catch {
-    return NextResponse.json([]);
-  }
+  return NextResponse.json(readMarkets());
 }

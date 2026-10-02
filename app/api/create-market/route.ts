@@ -32,6 +32,18 @@ import { privateKeyToAccount, nonceManager } from "viem/accounts";
 import { arcTestnet } from "@/lib/chain";
 
 // --- Config -----------------------------------------------------------
+import { validateTitle, pairNameFor } from "@/lib/server/market-title";
+import { createCreationGuard } from "@/lib/server/creation-guard";
+import { isAuthorizedToCreate } from "@/lib/server/bearer";
+import {
+  maxMarkets,
+  readMarkets,
+  writeMarkets,
+  type StoredMarket,
+} from "@/lib/server/markets-store";
+
+// Deploying two contracts and seeding the pool takes minutes on Arc.
+export const maxDuration = 300;
 
 const PROPOSER_REWARD = parseEther("10"); // 10 ARCT
 const MARKET_LIVENESS = 60n; // 1 minute (testnet)
@@ -99,34 +111,6 @@ const AMM_INIT_ABI = [
   },
 ] as const;
 
-// ----- Markets JSON file ----------------------------------------------
-
-interface StoredMarket {
-  id: string;
-  address: string;
-  ammAddress: string;
-  title: string;
-  category: string;
-  createdAt: string;
-}
-
-function getMarketsFilePath() {
-  return path.resolve(process.cwd(), "data", "markets.json");
-}
-
-function readMarkets(): StoredMarket[] {
-  try {
-    const data = fs.readFileSync(getMarketsFilePath(), "utf-8");
-    return JSON.parse(data);
-  } catch {
-    return [];
-  }
-}
-
-function writeMarkets(markets: StoredMarket[]) {
-  fs.writeFileSync(getMarketsFilePath(), JSON.stringify(markets, null, 2) + "\n");
-}
-
 /** Waits for a tx receipt with a reasonable timeout and polling interval. */
 async function waitForTx(
   publicClient: ReturnType<typeof createPublicClient>,
@@ -139,19 +123,10 @@ async function waitForTx(
   });
 }
 
-// --- POST handler ------------------------------------------------------
+// --- Creation (called once the request has passed every control below) -------------
 
-export async function POST(request: Request) {
+async function createMarket(trimmedTitle: string) {
   try {
-    const body = await request.json();
-    const { title } = body;
-
-    if (!title || typeof title !== "string" || title.trim().length === 0) {
-      return NextResponse.json({ error: "Title is required" }, { status: 400 });
-    }
-
-    const trimmedTitle = title.trim();
-
     // Validate env vars
     const privateKey = process.env.PRIVATE_KEY?.trim();
     if (!privateKey) {
@@ -170,10 +145,7 @@ export async function POST(request: Request) {
     }
 
     // Generate pair name from title (first 10 chars, uppercase, no spaces)
-    const pairName = trimmedTitle
-      .replace(/[^a-zA-Z0-9]/g, "")
-      .substring(0, 10)
-      .toUpperCase();
+    const pairName = pairNameFor(trimmedTitle);
 
     // Set up viem clients
     // Use the direct Arc RPC for server-side transactions. Alchemy's mempool tracker
@@ -303,9 +275,8 @@ export async function POST(request: Request) {
     });
     await waitForTx(publicClient, initAmmHash);
 
-    // --- Save to markets.json ------------------------------------------------
+    // --- Save to the registry -----------------------------------------------
 
-    const markets = readMarkets();
     const newMarket: StoredMarket = {
       id: `user-${Date.now()}`,
       address: marketAddress,
@@ -314,16 +285,80 @@ export async function POST(request: Request) {
       category: "Crypto",
       createdAt: new Date().toISOString(),
     };
-    markets.unshift(newMarket);
-    writeMarkets(markets);
+    try {
+      writeMarkets([newMarket, ...readMarkets()]);
+    } catch (writeError) {
+      // The contracts exist and cost real gas. Do not lose them: log where they are.
+      console.error(
+        `CRITICAL: market deployed but not recorded. market=${marketAddress} amm=${ammAddress} title=${JSON.stringify(trimmedTitle)}`,
+        writeError
+      );
+      return NextResponse.json(
+        {
+          error: "The market was deployed but could not be saved to the list.",
+          market: { address: marketAddress, ammAddress },
+        },
+        { status: 500 }
+      );
+    }
 
     return NextResponse.json({
       success: true,
       market: newMarket,
     });
   } catch (error) {
+    // The message can carry RPC URLs, request bodies and account details: log it, don't send it.
     console.error("Market creation failed:", error);
-    const message = error instanceof Error ? error.message : "Unknown error";
-    return NextResponse.json({ error: `Market creation failed: ${message}` }, { status: 500 });
+    return NextResponse.json({ error: "Market creation failed. Please try again later." }, { status: 500 });
+  }
+}
+
+// --- POST handler ------------------------------------------------------
+
+const guard = createCreationGuard({
+  cooldownMs: Number(process.env.CREATE_MARKET_COOLDOWN_SECONDS ?? 60) * 1000,
+  perClientMax: 3,
+  perClientWindowMs: 60 * 60 * 1000,
+});
+
+const clientKey = (request: Request) =>
+  request.headers.get("x-forwarded-for")?.split(",")[0].trim() || "unknown";
+
+/**
+ * POST /api/create-market  { title }
+ *
+ * Spends the SERVER's key to deploy two contracts, mint test tokens and seed a pool, so it is
+ * not left open: an optional bearer token, strict input limits, a cap on the number of
+ * markets, and single-flight / cooldown / per-client limits.
+ */
+export async function POST(request: Request) {
+  if (!isAuthorizedToCreate(request.headers.get("authorization"))) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  const body = await request.json().catch(() => null);
+  const validation = validateTitle(body?.title);
+  if (!validation.ok) {
+    return NextResponse.json({ error: validation.error }, { status: 400 });
+  }
+
+  if (readMarkets().length >= maxMarkets()) {
+    return NextResponse.json({ error: "The market limit has been reached." }, { status: 409 });
+  }
+
+  const permit = guard(clientKey(request));
+  if (!permit.ok) {
+    return NextResponse.json(
+      { error: permit.error },
+      { status: permit.status, headers: { "Retry-After": String(permit.retryAfterSeconds) } }
+    );
+  }
+
+  let response: NextResponse | undefined;
+  try {
+    response = await createMarket(validation.title);
+    return response;
+  } finally {
+    permit.release(response?.status === 200 ? "created" : "failed");
   }
 }

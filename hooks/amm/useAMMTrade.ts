@@ -18,76 +18,79 @@
 
 "use client";
 
+import { useCallback, useState } from "react";
+import { usePublicClient } from "wagmi";
 import { parseUnits } from "viem";
 import { AMM_ABI } from "@/lib/contracts/abis/amm";
 import { COLLATERAL_DECIMALS } from "@/lib/contracts/addresses";
+import { minAfterSlippage } from "@/lib/slippage";
 import { useContractWrite } from "@/hooks/useContractWrite";
 import { useMarketAddress } from "@/contexts/MarketAddressContext";
 
-export function useBuyYes() {
+type Trade = {
+  /** The on-chain function that performs the trade. */
+  fn: "buyYes" | "buyNo" | "sellYes" | "sellNo";
+  /** The view function that previews it. */
+  quote: "calcBuyYes" | "calcBuyNo" | "calcSellYes" | "calcSellNo";
+};
+
+/**
+ * Shared by the four trade hooks. Reads a fresh quote at the moment of submitting and passes
+ * it, less the slippage tolerance, as the trade's minimum output. If the pool moves against
+ * the trader before it is mined (a sandwich, or just another trade), it reverts instead of
+ * executing at a worse price. A failed quote read is surfaced, never replaced by "no floor".
+ */
+function useProtectedTrade({ fn, quote }: Trade) {
   const { write, isPending, isConfirming, isSuccess, error, hash } = useContractWrite();
   const { ammAddress } = useMarketAddress();
+  const publicClient = usePublicClient();
+  const [quoteError, setQuoteError] = useState<Error | null>(null);
 
-  const buy = (amount: string) => {
-    const parsed = parseUnits(amount, COLLATERAL_DECIMALS);
-    write({
-      address: ammAddress,
-      abi: AMM_ABI,
-      functionName: "buyYes",
-      args: [parsed],
-    });
-  };
+  const trade = useCallback(
+    async (amount: string) => {
+      setQuoteError(null);
+      try {
+        if (!publicClient) throw new Error("No public client available");
+        const parsed = parseUnits(amount, COLLATERAL_DECIMALS);
+        const expected = (await publicClient.readContract({
+          address: ammAddress,
+          abi: AMM_ABI,
+          functionName: quote,
+          args: [parsed],
+        })) as bigint;
 
-  return { buy, isPending, isConfirming, isSuccess, error, hash };
+        await write({
+          address: ammAddress,
+          abi: AMM_ABI,
+          functionName: fn,
+          args: [parsed, minAfterSlippage(expected)],
+        });
+      } catch (err) {
+        setQuoteError(err instanceof Error ? err : new Error("Could not price the trade"));
+      }
+    },
+    [publicClient, ammAddress, write, fn, quote],
+  );
+
+  return { trade, isPending, isConfirming, isSuccess, error: quoteError ?? error, hash };
+}
+
+export function useBuyYes() {
+  const { trade, ...state } = useProtectedTrade({ fn: "buyYes", quote: "calcBuyYes" });
+  return { buy: trade, ...state };
 }
 
 export function useBuyNo() {
-  const { write, isPending, isConfirming, isSuccess, error, hash } = useContractWrite();
-  const { ammAddress } = useMarketAddress();
-
-  const buy = (amount: string) => {
-    const parsed = parseUnits(amount, COLLATERAL_DECIMALS);
-    write({
-      address: ammAddress,
-      abi: AMM_ABI,
-      functionName: "buyNo",
-      args: [parsed],
-    });
-  };
-
-  return { buy, isPending, isConfirming, isSuccess, error, hash };
+  const { trade, ...state } = useProtectedTrade({ fn: "buyNo", quote: "calcBuyNo" });
+  return { buy: trade, ...state };
 }
 
 export function useSellYes() {
-  const { write, isPending, isConfirming, isSuccess, error, hash } = useContractWrite();
-  const { ammAddress } = useMarketAddress();
-
-  const sell = (tokenAmount: string) => {
-    const parsed = parseUnits(tokenAmount, COLLATERAL_DECIMALS);
-    write({
-      address: ammAddress,
-      abi: AMM_ABI,
-      functionName: "sellYes",
-      args: [parsed],
-    });
-  };
-
-  return { sell, isPending, isConfirming, isSuccess, error, hash };
+  const { trade, ...state } = useProtectedTrade({ fn: "sellYes", quote: "calcSellYes" });
+  return { sell: trade, ...state };
 }
 
 export function useSellNo() {
-  const { write, isPending, isConfirming, isSuccess, error, hash } = useContractWrite();
-  const { ammAddress } = useMarketAddress();
-
-  const sell = (tokenAmount: string) => {
-    const parsed = parseUnits(tokenAmount, COLLATERAL_DECIMALS);
-    write({
-      address: ammAddress,
-      abi: AMM_ABI,
-      functionName: "sellNo",
-      args: [parsed],
-    });
-  };
-
-  return { sell, isPending, isConfirming, isSuccess, error, hash };
+  const { trade, ...state } = useProtectedTrade({ fn: "sellNo", quote: "calcSellNo" });
+  return { sell: trade, ...state };
 }

@@ -16,16 +16,20 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { ethers } from "hardhat";
+import { network } from "hardhat";
+import { ethers } from "ethers";
+import { createRequire } from "module";
 import * as fs from "fs";
 import * as path from "path";
+
+const require = createRequire(import.meta.url);
+const { ethers: hhEthers } = await network.getOrCreate();
 
 // --- Artifact loaders -----------------------------------------------
 // UMA infrastructure contracts are deployed from pre-compiled artifacts in @uma/core.
 // Only the prediction market and AMM are compiled from our contracts/ directory.
 
 function loadUmaArtifact(contractPath: string) {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
   const artifact = require(`@uma/core/artifacts/contracts/${contractPath}`);
   return { abi: artifact.abi, bytecode: artifact.bytecode };
 }
@@ -71,7 +75,7 @@ const CONFIG = {
 
 async function deployFromArtifact(
   name: string,
-  artifact: { abi: unknown[]; bytecode: string },
+  artifact: { abi: ethers.InterfaceAbi; bytecode: string },
   args: unknown[],
   signer: ethers.Signer
 ) {
@@ -98,17 +102,17 @@ async function retryCall<T>(fn: () => Promise<T>, retries = 5, delayMs = 2000): 
 }
 
 async function clearPendingTransactions(
-  deployer: Awaited<ReturnType<typeof ethers.getSigners>>[0]
+  deployer: Awaited<ReturnType<typeof hhEthers.getSigners>>[0]
 ) {
-  const pendingNonce = await ethers.provider.getTransactionCount(deployer.address, "pending");
-  const confirmedNonce = await ethers.provider.getTransactionCount(deployer.address, "latest");
+  const pendingNonce = await hhEthers.provider.getTransactionCount(deployer.address, "pending");
+  const confirmedNonce = await hhEthers.provider.getTransactionCount(deployer.address, "latest");
 
   if (pendingNonce === confirmedNonce) return;
 
   const stuck = pendingNonce - confirmedNonce;
   console.log(`  Found ${stuck} stuck pending transaction(s). Clearing...`);
 
-  const feeData = await ethers.provider.getFeeData();
+  const feeData = await hhEthers.provider.getFeeData();
 
   for (let nonce = confirmedNonce; nonce < pendingNonce; nonce++) {
     const tx = await deployer.sendTransaction({
@@ -145,7 +149,7 @@ function writeEnvFile(envPath: string, vars: Record<string, string>) {
 // --- Main -----------------------------------------------------------
 
 async function main() {
-  const signers = await ethers.getSigners();
+  const signers = await hhEthers.getSigners();
   if (signers.length === 0) {
     throw new Error(
       "No deployer account found. Set PRIVATE_KEY in .env.local (64 hex chars, with or without 0x prefix)."
@@ -153,7 +157,7 @@ async function main() {
   }
   const [baseSigner] = signers;
   const deployer = new ethers.NonceManager(baseSigner);
-  const balance = await ethers.provider.getBalance(baseSigner.address);
+  const balance = await hhEthers.provider.getBalance(baseSigner.address);
 
   console.log("=== UMA Prediction Market Deployment ===\n");
   console.log("Deployer:", baseSigner.address);
@@ -246,7 +250,7 @@ async function main() {
 
   const customAncillaryData = ethers.toUtf8Bytes(CONFIG.question);
 
-  const marketFactory = await ethers.getContractFactory("EventBasedPredictionMarket", deployer);
+  const marketFactory = await hhEthers.getContractFactory("EventBasedPredictionMarket", deployer);
   const market = await marketFactory.deploy(
     CONFIG.pairName,
     arctAddr,
@@ -282,7 +286,7 @@ async function main() {
 
   console.log("\nPhase 6: Deploying and seeding AMM...\n");
 
-  const ammFactory = await ethers.getContractFactory("PredictionMarketAMM", deployer);
+  const ammFactory = await hhEthers.getContractFactory("PredictionMarketAMM", deployer);
   const amm = await ammFactory.deploy(marketAddr, CONFIG.ammFeeBps);
   await amm.waitForDeployment();
   const ammAddr = await amm.getAddress();
@@ -295,7 +299,7 @@ async function main() {
 
   // --- Phase 7: Write .env.local ----------------------------------
 
-  const envPath = path.resolve(__dirname, "../.env.local");
+  const envPath = path.resolve(import.meta.dirname, "../.env.local");
   writeEnvFile(envPath, {
     NEXT_PUBLIC_MARKET_ADDRESS: marketAddr,
     NEXT_PUBLIC_AMM_ADDRESS: ammAddr,

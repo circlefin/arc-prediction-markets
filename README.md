@@ -18,11 +18,13 @@ Since UMA's oracle infrastructure is not natively deployed on Arc Testnet, the d
 - [Market Lifecycle](#market-lifecycle)
 - [Creating Custom Markets](#creating-custom-markets)
 - [Environment Variables](#environment-variables)
+- [Testing](#testing)
 - [Project Structure](#project-structure)
+- [Security & Usage Model](#security--usage-model)
 
 ## Prerequisites
 
-- **Node.js v18+** - Install via [nvm](https://github.com/nvm-sh/nvm)
+- **Node.js v20+** - Install via [nvm](https://github.com/nvm-sh/nvm)
 - **A wallet** - either:
   - **MetaMask** (or any injected EVM wallet) - connected to **Arc Testnet** (Chain ID `5042002`), or
   - **Circle Passkey Wallet** - browser-based biometric authentication via WebAuthn (no extension needed). Requires a [Circle developer account](https://console.circle.com/) for the client key and URL.
@@ -48,8 +50,8 @@ Since UMA's oracle infrastructure is not natively deployed on Arc Testnet, the d
 1. Clone the repository and install dependencies:
 
    ```bash
-   git clone git@github.com:circlefin/arc-prediction-markets.git
-   cd arc-prediction-markets
+   git clone git@github.com:akelani-circle/arc-prediction-market.git
+   cd arc-prediction-market
    npm install
    ```
 
@@ -153,9 +155,13 @@ The `PredictionMarketAMM` contract sits on top of the prediction market and prov
 
 ### How trading works
 
-**Buying**: When a user calls `buyYes(amount)`, the AMM pulls ARCT, mints a Yes+No pair via the market, swaps the unwanted No tokens into the pool's reserve, and sends the user all the Yes tokens (minted + swapped).
+**Buying**: When a user calls `buyYes(amount, minYesOut)`, the AMM pulls ARCT, mints a Yes+No pair via the market, swaps the unwanted No tokens into the pool's reserve, and sends the user all the Yes tokens (minted + swapped).
 
-**Selling**: When a user calls `sellYes(amount)`, the AMM pulls Yes tokens, swaps them for No tokens via constant product, pairs them to redeem ARCT from the market, and sends the user the ARCT.
+**Selling**: When a user calls `sellYes(amount, minArctOut)`, the AMM pulls Yes tokens and pays by redeeming Yes+No **pairs** for ARCT. The amount paid solves the constant-product equation `(reserveYes + amount - out) * (reserveNo - out) = k`, so a token is worth its price and no more.
+
+**Slippage**: every trade takes a minimum-output argument and reverts if the pool has moved against the trader since the quote. The UI reads a fresh quote when you submit and allows 1% (`lib/slippage.ts`).
+
+**After resolution**: trading stops. The deployer can call `withdrawLiquidity()` to recover the seed liquidity and the fees the pool earned. Only the deployer can call `initialize()`.
 
 ### Pricing
 
@@ -209,7 +215,7 @@ Custom markets are stored in `data/markets.json` and served via the `/api/market
 npm run reset
 ```
 
-> **Note:** Market creation requires the server to have access to the deployer `PRIVATE_KEY` (set in `.env.local`), since contracts are deployed from the server side.
+> **Note:** Market creation requires the server to have access to the deployer `PRIVATE_KEY` (set in `.env.local`), since contracts are deployed from the server side. **That makes `/api/create-market` a public endpoint that spends your key**, so it is limited: titles of 5 to 140 characters, one creation at a time, a cooldown between creations (`CREATE_MARKET_COOLDOWN_SECONDS`, default 60), and at most `MAX_MARKETS` (default 100) markets. Set `CREATE_MARKET_TOKEN` to require `Authorization: Bearer <token>`.
 
 ## Environment Variables
 
@@ -219,6 +225,8 @@ All environment variables live in `.env.local`. The deploy script automatically 
 | --- | --- |
 | `PRIVATE_KEY` | Deployer wallet private key |
 | `NEXT_PUBLIC_ALCHEMY_RPC_URL` | Alchemy RPC URL (used by both Hardhat and the frontend) |
+| `CREATE_MARKET_TOKEN` | Optional. When set, `POST /api/create-market` requires `Authorization: Bearer <token>` |
+| `CREATE_MARKET_COOLDOWN_SECONDS` / `MAX_MARKETS` | Optional. Seconds between market creations (default 60) and the most markets to keep (default 100) |
 | `NEXT_PUBLIC_MARKET_ADDRESS` | Deployed EventBasedPredictionMarket address (auto-written) |
 | `NEXT_PUBLIC_AMM_ADDRESS` | Deployed PredictionMarketAMM address (auto-written) |
 | `NEXT_PUBLIC_ARCT_ADDRESS` | Deployed ARCT (TestnetERC20) address (auto-written) |
@@ -228,6 +236,11 @@ All environment variables live in `.env.local`. The deploy script automatically 
 | `NEXT_PUBLIC_MOCK_ORACLE_ADDRESS` | Deployed MockOracleAncillary address (auto-written) |
 | `NEXT_PUBLIC_CIRCLE_CLIENT_KEY` | Circle modular wallets client key (for passkey wallet) |
 | `NEXT_PUBLIC_CIRCLE_CLIENT_URL` | Circle modular wallets API URL (for passkey wallet) |
+
+## Testing
+
+- `npm test` runs the unit tests in `tests/unit` (no services needed).
+- `npm run test:contracts` runs the Solidity tests in `test/` on Hardhat's in-process network, covering the AMM's pricing, slippage limits, access control and recovery after resolution.
 
 ## Project Structure
 
@@ -334,4 +347,9 @@ This sample application:
 - Targets Arc Testnet only
 - Uses UMA's Optimistic Oracle V2 for trustless resolution, with a MockOracleAncillary as DVM substitute on testnet
 - ARCT tokens are freely mintable - not suitable for production use without replacing with a real collateral token
+- Has no user accounts, so `/api/create-market` cannot tell callers apart: protect it with `CREATE_MARKET_TOKEN`
 - Is not intended for production use without modification
+
+## Legal
+
+Sample apps provided for demonstration and educational purposes only, intended for Arc testnet use only, and not production-ready. See [Arc.io](https://arc.io) for more.
