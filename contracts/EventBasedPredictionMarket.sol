@@ -24,7 +24,10 @@ import "@uma/core/contracts/data-verification-mechanism/interfaces/IdentifierWhi
  *   6. Once settled, users call settle() to redeem tokens for collateral based on the outcome.
  *   7. If nobody proposes/resolves a price within SETTLEMENT_TIMEOUT of initialization, any token
  *      holder can call emergencyRefund() to redeem at a neutral 0.5/0.5 split instead of waiting
- *      indefinitely on the Optimistic Oracle.
+ *      indefinitely on the Optimistic Oracle. Each dispute (up to MAX_DISPUTE_EXTENSIONS of them)
+ *      restarts that SETTLEMENT_TIMEOUT window, and emergencyRefund() stays closed for as long as
+ *      the current oracle request has a proposal or dispute in progress, because a 0.5/0.5 refund
+ *      paid out before a real YES/NO price lands would leave the market under-collateralized.
  *
  * Resolution values:
  *   - 1e18 (YES): Long tokens worth 1 collateral each, Short tokens worth 0.
@@ -55,6 +58,12 @@ contract EventBasedPredictionMarket is Testable {
     // Timestamp after which emergencyRefund() becomes callable if the OO still hasn't settled a price.
     uint256 public settlementDeadline;
     uint256 public constant SETTLEMENT_TIMEOUT = 72 hours;
+
+    // Disputes that still push settlementDeadline back. Past this, a dispute is still processed
+    // (priceDisputed() must never revert or it would block the OO's dispute flow) but no longer
+    // extends the deadline, so a stream of disputes cannot keep emergencyRefund() closed forever.
+    uint256 public constant MAX_DISPUTE_EXTENSIONS = 3;
+    uint256 public disputeCount;
 
     // External contract interfaces.
     ExpandedERC20 public collateralToken;
@@ -208,8 +217,12 @@ contract EventBasedPredictionMarket is Testable {
         requestTimestamp = getCurrentTime();
         _requestOraclePrice();
 
-        // NOTE: settlementDeadline intentionally does NOT reset here. A dispute that occurs close to
-        // the deadline can race emergencyRefund() against a legitimate re-resolution — see PR discussion.
+        // A dispute restarts the settlement window so DVM arbitration is not raced by emergencyRefund().
+        // Bounded by MAX_DISPUTE_EXTENSIONS; beyond that the deadline stays where it is (no revert).
+        if (disputeCount < MAX_DISPUTE_EXTENSIONS) {
+            disputeCount++;
+            settlementDeadline = getCurrentTime() + SETTLEMENT_TIMEOUT;
+        }
 
         emit PriceDisputed(oldTimestamp, requestTimestamp);
     }
@@ -266,10 +279,14 @@ contract EventBasedPredictionMarket is Testable {
 
     /**
      * @notice Emergency exit for token holders when the Optimistic Oracle never resolves a price.
-     * Callable only after SETTLEMENT_TIMEOUT has elapsed since initializeMarket() with no settlement
-     * price received. Pays out at a neutral 0.5/0.5 split (same math as an "Undetermined" OO result),
-     * since the true outcome was never established. Directional (one-sided) holders are otherwise
-     * unable to exit — redeem() only works for matched Long+Short pairs.
+     * Callable only after settlementDeadline (SETTLEMENT_TIMEOUT after initializeMarket(), restarted by
+     * each of the first MAX_DISPUTE_EXTENSIONS disputes) with no settlement price received, and only
+     * while the current oracle request is still in the Requested state, i.e. no proposal is pending,
+     * expired-but-unsettled, or disputed. Otherwise a real YES/NO price could still arrive after
+     * refunds were paid at 0.5 per token, leaving the market short of collateral for the winning side.
+     * Pays out at a neutral 0.5/0.5 split (same math as an "Undetermined" OO result), since the true
+     * outcome was never established. Directional (one-sided) holders are otherwise unable to exit —
+     * redeem() only works for matched Long+Short pairs.
      * @param longTokensToRedeem Number of Long tokens to redeem.
      * @param shortTokensToRedeem Number of Short tokens to redeem.
      * @return collateralReturned Total collateral returned.
@@ -280,6 +297,11 @@ contract EventBasedPredictionMarket is Testable {
     ) public requestInitialized returns (uint256 collateralReturned) {
         require(getCurrentTime() > settlementDeadline, "Settlement deadline not reached");
         require(!receivedSettlementPrice, "Price already resolved, use settle()");
+        require(
+            getOptimisticOracle().getState(address(this), priceIdentifier, requestTimestamp, customAncillaryData) ==
+                OptimisticOracleV2Interface.State.Requested,
+            "Oracle resolution in progress"
+        );
 
         require(longToken.burnFrom(msg.sender, longTokensToRedeem));
         require(shortToken.burnFrom(msg.sender, shortTokensToRedeem));
