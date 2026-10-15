@@ -50,8 +50,8 @@ Since UMA's oracle infrastructure is not natively deployed on Arc Testnet, the d
 1. Clone the repository and install dependencies:
 
    ```bash
-   git clone git@github.com:akelani-circle/arc-prediction-market.git
-   cd arc-prediction-market
+   git clone git@github.com:circlefin/arc-prediction-markets.git
+   cd arc-prediction-markets
    npm install
    ```
 
